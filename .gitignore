@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+agent/audit/audit_log.jsonl
+agent/rollback/snapshots/
+agent/workspace/
+.env
