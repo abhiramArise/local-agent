@@ -42,8 +42,12 @@ def run_agent(user_request: str = None, resume_task_id: str = None, resume_messa
         task_id = resume_task_id
         messages = resume_messages
         print(f"Resuming task {task_id} from checkpoint ({len(messages)} messages)...")
+        original_request = next(
+            (m["content"] for m in messages if m.get("role") == "user"), ""
+        )
     else:
         task_id = str(uuid.uuid4())[:8]
+        original_request = user_request
         messages = [
             {
                 "role": "system",
@@ -85,7 +89,7 @@ def run_agent(user_request: str = None, resume_task_id: str = None, resume_messa
                 # Ambiguity check runs BEFORE logging/execution. A
                 # blocked call is still logged — "the model tried this
                 # and was blocked" is itself worth having on record.
-                ok, reason = check_call(tool_name, args)
+                ok, reason = check_call(tool_name, args, user_request=original_request)
 
                 entry_id = log_action(
                     action=tool_name,
