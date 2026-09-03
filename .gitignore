@@ -1,5 +1,6 @@
 __pycache__/
 *.pyc
+agent/benchmark/results/
 agent/state/checkpoints/
 agent/audit/audit_log.jsonl
 agent/rollback/snapshots/
