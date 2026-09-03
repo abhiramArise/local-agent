@@ -26,23 +26,35 @@ from audit.signer import log_action, log_outcome
 from rollback.undo_manager import snapshot_before_write
 from tools.file_tools import WORKSPACE_ROOT
 from policy.ambiguity_check import check_call
+from state.session import save_checkpoint, mark_completed, find_resumable, load_checkpoint
 
 MAX_STEPS = 10  # hard cap so a bad loop can't run forever
 SESSION_ID = str(uuid.uuid4())[:8]  # one id per run of this script
 
 
-def run_agent(user_request: str):
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a local file assistant. You can read, write, and "
-                "list files using the tools available to you. Use them when "
-                "needed. Only operate within the workspace folder."
-            ),
-        },
-        {"role": "user", "content": user_request},
-    ]
+def run_agent(user_request: str = None, resume_task_id: str = None, resume_messages: list = None):
+    """
+    Either starts a fresh task (pass user_request) or resumes an
+    interrupted one (pass resume_task_id + resume_messages, loaded
+    from a checkpoint by the caller).
+    """
+    if resume_messages is not None:
+        task_id = resume_task_id
+        messages = resume_messages
+        print(f"Resuming task {task_id} from checkpoint ({len(messages)} messages)...")
+    else:
+        task_id = str(uuid.uuid4())[:8]
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a local file assistant. You can read, write, and "
+                    "list files using the tools available to you. Use them when "
+                    "needed. Only operate within the workspace folder."
+                ),
+            },
+            {"role": "user", "content": user_request},
+        ]
 
     for step in range(MAX_STEPS):
         print(f"\n--- Step {step + 1} ---")
@@ -51,6 +63,9 @@ def run_agent(user_request: str):
         # No tool call — model gave a final answer, we're done.
         if not response.tool_calls:
             print(f"\nFinal answer:\n{response.content}")
+            messages.append({"role": "assistant", "content": response.content})
+            save_checkpoint(task_id, messages, status="completed")
+            mark_completed(task_id)
             return response.content
 
         # Append the assistant's tool-call request to history.
@@ -67,6 +82,9 @@ def run_agent(user_request: str):
             else:
                 print(f"Calling {tool_name}({args})")
 
+                # Ambiguity check runs BEFORE logging/execution. A
+                # blocked call is still logged — "the model tried this
+                # and was blocked" is itself worth having on record.
                 ok, reason = check_call(tool_name, args)
 
                 entry_id = log_action(
@@ -95,6 +113,8 @@ def run_agent(user_request: str):
                     result = f"ERROR: unknown tool '{tool_name}'"
                     log_outcome(entry_id, status="error", summary=result)
                 else:
+                    # Snapshot BEFORE executing any write, so it can be
+                    # undone even if something goes wrong right after.
                     if tool_name == "write_file" and "path" in args:
                         snapshot_before_write(entry_id, WORKSPACE_ROOT, args["path"])
 
@@ -118,13 +138,31 @@ def run_agent(user_request: str):
                 }
             )
 
+        # Checkpoint after every step — if the process dies on the
+        # NEXT call_llm (crash, throttle, network drop), this step's
+        # progress is still on disk.
+        save_checkpoint(task_id, messages, status="in_progress")
+
     print("\nMAX_STEPS reached without a final answer. Stopping.")
+    save_checkpoint(task_id, messages, status="in_progress")
     return None
 
 
 if __name__ == "__main__":
     print("Local Agent — skeleton stage (file tools only)")
-    print("Type your request, or 'quit' to exit.\n")
+
+    resumable = find_resumable()
+    if resumable:
+        print(f"\nFound {len(resumable)} interrupted task(s) from previous runs:")
+        for task_id, updated_at in resumable:
+            print(f"  {task_id}  (last updated {updated_at})")
+        choice = input("\nResume the most recent one? (y/n): ").strip().lower()
+        if choice == "y":
+            task_id, _ = resumable[0]
+            saved_messages = load_checkpoint(task_id)
+            run_agent(resume_task_id=task_id, resume_messages=saved_messages)
+
+    print("\nType your request, or 'quit' to exit.\n")
     while True:
         user_input = input("> ")
         if user_input.strip().lower() in ("quit", "exit"):
