@@ -25,6 +25,7 @@ from tools.file_tools import TOOL_DISPATCH
 from audit.signer import log_action, log_outcome
 from rollback.undo_manager import snapshot_before_write
 from tools.file_tools import WORKSPACE_ROOT
+from policy.ambiguity_check import check_call
 
 MAX_STEPS = 10  # hard cap so a bad loop can't run forever
 SESSION_ID = str(uuid.uuid4())[:8]  # one id per run of this script
@@ -66,15 +67,28 @@ def run_agent(user_request: str):
             else:
                 print(f"Calling {tool_name}({args})")
 
-                # Log BEFORE execution — this is the point of an audit
-                # trail. If execution crashes after this, the attempt
-                # is still on record.
+                ok, reason = check_call(tool_name, args)
+
                 entry_id = log_action(
                     action=tool_name,
                     params=args,
                     model=MODEL_NAME,
                     session_id=SESSION_ID,
                 )
+
+                if not ok:
+                    result = f"BLOCKED: {reason}"
+                    log_outcome(entry_id, status="blocked", summary=result)
+                    print(f"Logged as {entry_id}")
+                    print(f"Result: {result}")
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": tool_call.id,
+                            "content": result,
+                        }
+                    )
+                    continue
 
                 func = TOOL_DISPATCH.get(tool_name)
                 if func is None:
