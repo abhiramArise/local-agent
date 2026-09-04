@@ -67,5 +67,30 @@ FILE_TOOLS = [
     }
 ]
 
+SHELL_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "run_shell",
+            "description": (
+                "Run a shell command on the local machine (PowerShell on Windows). "
+                "The command runs inside the workspace folder as the working directory. "
+                "Every command requires human confirmation before it runs, regardless of "
+                "what it does — do not assume it will execute automatically."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {
+                        "type": "string",
+                        "description": "The exact shell command to run."
+                    }
+                },
+                "required": ["command"]
+            }
+        }
+    }
+]
+
 # Single source of truth the agent loop imports from.
-ALL_TOOLS = FILE_TOOLS
+ALL_TOOLS = FILE_TOOLS + SHELL_TOOLS

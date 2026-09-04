@@ -39,6 +39,7 @@ REQUIRED_PARAMS = {
     "read_file": ["path"],
     "write_file": ["path", "content"],
     "list_dir": ["path"],
+    "run_shell": ["command"],
 }
 
 VAGUE_PATTERNS = [

@@ -21,12 +21,15 @@ import json
 import uuid
 from llm_client import call_llm, MODEL_NAME
 from tools.registry import ALL_TOOLS
-from tools.file_tools import TOOL_DISPATCH
+from tools.file_tools import TOOL_DISPATCH as FILE_TOOL_DISPATCH
+from tools.shell_tools import SHELL_TOOL_DISPATCH
 from audit.signer import log_action, log_outcome
 from rollback.undo_manager import snapshot_before_write
 from tools.file_tools import WORKSPACE_ROOT
 from policy.ambiguity_check import check_call
 from state.session import save_checkpoint, mark_completed, find_resumable, load_checkpoint
+
+TOOL_DISPATCH = {**FILE_TOOL_DISPATCH, **SHELL_TOOL_DISPATCH}
 
 MAX_STEPS = 10  # hard cap so a bad loop can't run forever
 SESSION_ID = str(uuid.uuid4())[:8]  # one id per run of this script
@@ -52,9 +55,11 @@ def run_agent(user_request: str = None, resume_task_id: str = None, resume_messa
             {
                 "role": "system",
                 "content": (
-                    "You are a local file assistant. You can read, write, and "
-                    "list files using the tools available to you. Use them when "
-                    "needed. Only operate within the workspace folder."
+                    "You are a local assistant with file access (read_file, "
+                    "write_file, list_dir) and shell command access (run_shell). "
+                    "Every shell command requires human confirmation before it "
+                    "runs — expect that some commands may be declined or blocked. "
+                    "Only operate within the workspace folder."
                 ),
             },
             {"role": "user", "content": user_request},
