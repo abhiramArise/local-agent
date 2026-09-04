@@ -40,6 +40,9 @@ REQUIRED_PARAMS = {
     "write_file": ["path", "content"],
     "list_dir": ["path"],
     "run_shell": ["command"],
+    "browser_navigate": ["url"],
+    "browser_click": ["selector"],
+    "browser_fill": ["selector", "text"],
 }
 
 VAGUE_PATTERNS = [

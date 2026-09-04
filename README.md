@@ -3,7 +3,7 @@
 An LLM-backed agent with real file-system access on Windows, built around one idea: most AI agent complaints in 2026 aren't about capability, they're about trust. Users don't know what an agent actually did, can't undo mistakes, and get forced guesses instead of clarifying questions when instructions are ambiguous. This project treats those three problems as hard constraints enforced in code, not suggestions made to the model.
 
 Author: Abhi (github.com/abhiramArise)
-Status: Core build complete, all 7 planned components implemented and tested
+Status: Core build complete (7 planned components) plus shell and browser tool extensions, all implemented and tested
 
 ---
 
@@ -15,6 +15,7 @@ An agent that reads, writes, and lists files on request, using Groq (`openai/gpt
 - **Every file write can be undone**, with a snapshot taken before the write happens
 - **The agent cannot guess when it's missing information** — this is enforced by code, not by asking the model nicely
 - **A crashed or interrupted task can be resumed** from exactly where it left off
+- **Shell commands and browser actions require explicit human confirmation** before they run, with a blocklist as an additional (deliberately non-exhaustive) safety layer for shell
 - **A regression benchmark suite** catches silent behavior changes over time — the same model can behave differently from one day to the next, and this project has direct evidence of that happening
 
 ---
@@ -84,6 +85,24 @@ Initial version logged the attempt before execution but never recorded whether i
 
 Running the identical prompt ("create a file with some text") across different benchmark runs produced different behaviors: sometimes the model asked a clarifying question in plain text before attempting anything, other times it directly attempted a tool call with an invented filename. Same model, same prompt, different behavior seconds apart. This is direct, first-hand evidence of the "silent model regression / inconsistent behavior" problem this project set out to defend against — not a hypothetical, something actually observed and logged.
 
+### Bug 3: Every new line of input started a fresh, contextless conversation
+
+The original interactive loop called `run_agent(user_input)` fresh for every line typed at the `>` prompt, building a brand-new message history each time. This was invisible for months because most tasks completed in one exchange. It became a real problem once the model started asking plain-text confirmation questions before consequential actions (shell commands, browser navigation) — a "yes" typed in reply was sent as a new, contextless message the model had never seen the question for, producing responses like "I'm not sure what you'd like to do."
+
+**Fix:** rewrote the interactive loop around one continuous conversation per session, made of multiple turns, with the full message history persisting across every line of input until `quit`. Verified directly: a plain-text "no" to a model-asked confirmation question was correctly understood as declining that specific question, and a follow-up "yes, do X" correctly triggered the actual tool call.
+
+### Bug 4: Tool schema rejected `null` for an optional string parameter
+
+`browser_read`'s optional `selector` parameter was typed as plain `"string"` in the tool schema. When the model called it with no selector, it explicitly sent `"selector": null` rather than omitting the field — and Groq's schema validation rejected that, crashing the whole turn with an unhandled exception that dropped the session back to a bare terminal. Fixed by typing the field as `["string", "null"]` and separately making the interactive loop resilient to any single turn crashing (a bad turn now prints an error and lets the conversation continue, instead of ending the whole process).
+
+### Finding: the model over-confirms in plain text before consequential tool calls
+
+Tested repeatedly, deliberately, across shell and browser tools: the model very often asks a plain-text confirmation question ("would you like me to proceed?") before calling `run_shell`, `browser_navigate`, or `browser_click`, even when explicitly instructed to call the tool directly. This happened consistently enough (multiple trials, both tools) to call it a real behavioral pattern of this specific model, not noise. Practical implication: the code-level confirmation gates inside those tools are the actual safety mechanism and were verified working independently — but in normal conversational use, the model's own text-based question is often what a user responds to first, which is exactly why the persistent-conversation fix (Bug 3) mattered.
+
+### Finding: no automatic recovery from an externally-closed browser window
+
+Because `browser_navigate`/`click`/`fill`/`read` run against a real, visible Chromium window (not headless), it's possible to close that window by hand — the singleton browser instance then pointed at a dead page, and every subsequent call failed identically until the whole Python process restarted. Fixed by detecting a closed page in `_ensure_browser()` and relaunching automatically. Verified directly: closed the browser mid-session, the next action failed cleanly with a caught error, the model correctly diagnosed it and asked to retry, and on retry the browser relaunched and the original task (click "Learn more") completed successfully on the new page.
+
 ### Verified end-to-end (not just written, actually run and confirmed)
 
 - **Audit trail**: tamper-evident hash verification passed after every test round, including after a deliberate path-traversal attempt
@@ -99,7 +118,9 @@ Running the identical prompt ("create a file with some text") across different b
 - **The ambiguity check's request-grounding check is a heuristic**, not a semantic understanding of the request. It catches requests with zero real information, but a request with *some* misleading information could still slip through.
 - **Rollback currently only covers `write_file`.** There's no delete tool yet, so nothing needed rollback beyond overwrite/create.
 - **Not fully offline.** Reasoning calls go to Groq's API — this is "local execution, cloud reasoning," not zero-network-dependency. This was a deliberate scoping decision after evaluating the laptop's hardware (7.7GB RAM, 2GB VRAM — insufficient for reliable local tool-calling).
+- **Browser actions cannot be rolled back.** Unlike file writes, there's no snapshot-and-restore for a real click on a live website. The confirmation gate is the only safety net for browser actions, not one layer among several.
 - **Snapshots and checkpoints accumulate indefinitely** on disk — no pruning implemented yet.
+- **Shell tool uses a blocklist, not a whitelist** — a deliberate choice, more flexible but inherently incomplete (a blocklist can never cover every dangerous pattern). The real safety mechanism is the mandatory human confirmation gate before every command, not the blocklist itself. Verified directly: the blocklist correctly blocks known-dangerous patterns (e.g. `rm -rf`) with no prompt, and the confirmation gate correctly executes on "yes" and cancels on anything else. Separately observed: the model itself refused to attempt a destructive command in plain text on every trial run, without ever reaching the tool — a model-level behavior, not something the code can rely on or take credit for.
 
 ---
 
@@ -107,7 +128,8 @@ Running the identical prompt ("create a file with some text") across different b
 
 - Python
 - Groq API (`openai/gpt-oss-120b`) for reasoning — Groq's Llama models were deprecated mid-project; this is itself a small real-world example of the "model availability changes without much warning" problem
-- No external dependencies beyond the `groq` SDK — audit logging, rollback, and checkpointing are all plain Python + JSON, no database
+- Playwright (Chromium) for browser automation
+- No other external dependencies — audit logging, rollback, and checkpointing are all plain Python + JSON, no database
 
 ## Setup
 
